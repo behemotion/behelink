@@ -5,12 +5,14 @@ from fastapi import Depends, FastAPI
 
 from behelink import db
 from behelink.config import Settings
+from behelink.errors import install_handlers
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
     app = FastAPI(title="behelink", docs_url=None, redoc_url=None)
     app.state.settings = settings
+    install_handlers(app)
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(settings.database_path)
