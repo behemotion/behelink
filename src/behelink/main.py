@@ -122,4 +122,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.update_heartbeat(conn, link_id, ip=ip, port=port, last_seen=now)
         return {"ip": ip, "port": port, "last_seen": _iso(now)}
 
+    @app.get("/v1/links/{link_id}")
+    def resolve(
+        link_id: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, object]:
+        token = _bearer_token(request)
+        link = db.get_link(conn, link_id)
+        if link is None or not tokens.verify_token(token, link.resolve_token_hash):
+            raise _not_found(link_id)
+        if clock.now() - link.last_seen > settings.heartbeat_ttl_seconds:
+            raise _not_found(link_id)
+        return {"ip": link.ip, "port": link.port, "last_seen": _iso(link.last_seen)}
+
     return app
