@@ -10,8 +10,9 @@ anywhere resolves that address through behelink, then connects **directly** to
 the client's server. behelink is pure rendezvous: it never proxies task-server
 traffic (no data-plane relaying, no NAT hole-punching).
 
-BEHEMOTION operates one public instance by default; anyone can self-host their
-own behelink and point their deployment at it instead.
+BEHEMOTION operates one public instance by default —
+**https://link.behemotion.com** (see [`deploy.md`](deploy.md)); anyone can
+self-host their own behelink and point their deployment at it instead.
 
 ## Design
 
