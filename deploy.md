@@ -12,7 +12,7 @@ Deployed **2026-07-21** to the dedicated public server (Hostkey panel name
 | State | `/home/build/apps/behelink-data/behelink.db` (SQLite, WAL) |
 | Service | systemd **user** unit `behelink.service` (linger enabled — survives logout, starts at boot) |
 | Front | Caddy (official caddy apt repo, v2.11.4), vhost `link.behemotion.com`, auto-TLS (Let's Encrypt, obtained 2026-07-21, auto-renews) → `reverse_proxy 127.0.0.1:47150` |
-| Firewall | ufw: default-deny inbound; `22/tcp` (rate-limited), `80/tcp`, `443/tcp+udp` only |
+| Firewall | ufw: default-deny inbound; `22/tcp` (rate-limited), `80/tcp`, `443/tcp+udp`, `47151/udp` (hole-punch reflector, added 2026-07-21) |
 | Brute-force | fail2ban, `sshd` jail (systemd backend, incremental bans up to 48h) |
 | Updates | unattended-upgrades: security + `-updates` pockets, auto-reboot 04:30 when required |
 
@@ -146,18 +146,29 @@ The database lives outside the checkout, so `--delete` is safe.
 - Single instance by design (in-memory rate limiter, SQLite); HA out of
   scope for v1.
 
-## Hole-punch signaling (not yet applied to the live box)
+## Hole-punch signaling (live since 2026-07-21)
 
 Adds a UDP listener on `BEHELINK_REFLECTOR_PORT` (default `47151`) in the same process — no new
-systemd unit, no Caddy change (Caddy can't front raw UDP). Before deploying this:
+systemd unit, no Caddy change (Caddy can't front raw UDP).
 
-- `sudo ufw allow 47151/udp` on the live box (mirrors the existing `allow 443/udp` rule) — a
-  manual step for the operator, run once when ready to ship this feature, not part of an automated
-  redeploy.
-- Confirm `BEHELINK_REFLECTOR_HOST=0.0.0.0` (the default) — unlike the HTTP listener, this one
-  binds a public interface directly, by design (Caddy can't proxy it).
-- After the `ufw` rule is live, verify with `nc -u 46.17.103.230 47151` sending
-  `{"token":"<a live token>"}` from an outside network and confirming a JSON reply.
+- `sudo ufw allow 47151/udp` applied on the live box (mirrors the existing `allow 443/udp` rule).
+- `BEHELINK_REFLECTOR_HOST=0.0.0.0` (the default, no override needed) — unlike the HTTP listener,
+  this one binds a public interface directly, by design (Caddy can't proxy it).
+- Verified with a UDP probe sending `{"token":"<a live token>"}` from an outside network and
+  confirming a JSON `{"ip", "port"}` reply — see "Live verification" below.
+
+## Hole-punch signaling live verification (2026-07-21)
+
+- Redeployed via the standard rsync + `uv sync` + `uv run pytest` + `systemctl --user restart`
+  flow above; full pytest suite (60 tests) green on the server itself.
+- `sudo ufw allow 47151/udp` applied; `ss -ulnp` confirmed the reflector bound `0.0.0.0:47151`.
+- End-to-end from an outside network against `https://link.behemotion.com`: register (201) →
+  `POST :requestConnect` with the resolve token (`200 {ip, port}`, the link's own candidate) →
+  `GET /pending-connect` with the owner token (`200`, returned the queued candidate `{ip, port}`)
+  → wrong-token `pending-connect` (`404`) → deregister (`204`).
+- UDP self-STUN reflector probed directly at `46.17.103.230:47151` from outside: valid token →
+  JSON reply echoing the prober's observed `(ip, port)`; invalid token → no reply (timeout), as
+  designed.
 
 ## Live verification (2026-07-21)
 
