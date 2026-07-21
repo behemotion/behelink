@@ -27,6 +27,10 @@ class HeartbeatRequest(BaseModel):
     port: int | None = Field(default=None, ge=1, le=65535)
 
 
+class RequestConnectRequest(BaseModel):
+    port: int = Field(ge=1, le=65535)
+
+
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
@@ -201,5 +205,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         resolve_token = tokens.generate_token("blr")
         db.update_resolve_token_hash(conn, link_id, tokens.hash_token(resolve_token))
         return {"resolve_token": resolve_token}
+
+    @app.post("/v1/links/{link_id}:requestConnect")
+    def request_connect(
+        link_id: str,
+        body: RequestConnectRequest,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, object]:
+        token = _bearer_token(request)
+        link = db.get_link(conn, link_id)
+        if link is None or not tokens.verify_token(token, link.resolve_token_hash):
+            raise _not_found(link_id)
+        if not app.state.request_connect_limiter.allow(token):
+            raise ProblemError(
+                429,
+                "rate_limited",
+                "Too Many Requests",
+                "connect-request rate limit exceeded for this token",
+                headers={"Retry-After": "60"},
+            )
+        app.state.pending_connect_store.put(link_id, ip=_client_ip(request), port=body.port)
+        return {"ip": link.ip, "port": link.port}
 
     return app
