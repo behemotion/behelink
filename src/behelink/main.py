@@ -3,7 +3,7 @@ import sqlite3
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from pydantic import BaseModel, Field
 
 from behelink import clock, db, tokens
@@ -135,5 +135,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if clock.now() - link.last_seen > settings.heartbeat_ttl_seconds:
             raise _not_found(link_id)
         return {"ip": link.ip, "port": link.port, "last_seen": _iso(link.last_seen)}
+
+    @app.delete("/v1/links/{link_id}", status_code=204)
+    def deregister(
+        link_id: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> Response:
+        token = _bearer_token(request)
+        link = db.get_link(conn, link_id)
+        if link is None or not tokens.verify_token(token, link.owner_token_hash):
+            raise _not_found(link_id)
+        db.delete_link(conn, link_id)
+        return Response(status_code=204)
+
+    @app.post("/v1/links/{link_id}:rotateResolveToken")
+    def rotate_resolve_token(
+        link_id: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, str]:
+        token = _bearer_token(request)
+        link = db.get_link(conn, link_id)
+        if link is None or not tokens.verify_token(token, link.owner_token_hash):
+            raise _not_found(link_id)
+        resolve_token = tokens.generate_token("blr")
+        db.update_resolve_token_hash(conn, link_id, tokens.hash_token(resolve_token))
+        return {"resolve_token": resolve_token}
 
     return app
