@@ -17,7 +17,11 @@ CREATE TABLE IF NOT EXISTS links (
 
 
 def connect(path: str) -> sqlite3.Connection:
-    conn = sqlite3.connect(path)
+    # check_same_thread=False: async routes run on the event loop thread while the
+    # sync `get_conn` dependency that creates this connection runs in FastAPI's
+    # threadpool — the connection is still single-request-scoped, never shared
+    # across concurrent requests.
+    conn = sqlite3.connect(path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)

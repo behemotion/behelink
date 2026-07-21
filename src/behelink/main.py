@@ -5,7 +5,8 @@ from collections.abc import Iterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, Query, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from behelink import clock, db, tokens
@@ -227,5 +228,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         app.state.pending_connect_store.put(link_id, ip=_client_ip(request), port=body.port)
         return {"ip": link.ip, "port": link.port}
+
+    @app.get("/v1/links/{link_id}/pending-connect")
+    async def pending_connect(
+        link_id: str,
+        request: Request,
+        wait: float = Query(default=0.0, ge=0.0),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> Response:
+        token = _bearer_token(request)
+        link = db.get_link(conn, link_id)
+        if link is None or not tokens.verify_token(token, link.owner_token_hash):
+            raise _not_found(link_id)
+        clamped_wait = min(wait, settings.pending_connect_wait_max_seconds)
+        record = await app.state.pending_connect_store.wait(link_id, timeout=clamped_wait)
+        if record is None:
+            return Response(status_code=204)
+        return JSONResponse({"ip": record.ip, "port": record.port})
 
     return app
