@@ -14,13 +14,20 @@ Audited against the umbrella's [`docs/CONVENTIONS.md`](../docs/CONVENTIONS.md)
    Security Considerations). The listener itself still binds `127.0.0.1:47150`
    (`src/behelink/config.py:9-10`); only Caddy is exposed.
 
-2. **Port registry (§7): 47150 not yet in the umbrella registry.** The spec
-   assigns behelink port 47150 as the next open slot; the umbrella's
-   `docs/CONVENTIONS.md` §7 / `docs/HARNESS-PLAN.md` registry hasn't been
-   updated yet — umbrella-owned files, flagged for a `/handoff BEHEMOTION`
-   rather than edited from here.
+2. **New public, directly-exposed UDP port (not Caddy-fronted).** The UDP self-STUN reflector
+   (`src/behelink/reflector.py`) binds `BEHELINK_REFLECTOR_HOST:BEHELINK_REFLECTOR_PORT` (default
+   `0.0.0.0:47151`) directly — Caddy can't proxy raw UDP the way this needs, so unlike every other
+   public surface today, this listener answers straight from the OS socket. Design and the
+   behelink-owner sign-off on this trade-off:
+   `docs/superpowers/specs/2026-07-21-behelink-holepunch-signaling-design.md` (Security
+   Considerations). Mitigations: bearer-token-gated probes (no anonymous reflection), a
+   per-source-IP rate limiter, and a request/reply size ratio that defeats classic UDP
+   amplification abuse by construction.
 
 ## Conformance notes (not divergences)
+
+- Port registry (§7): 47150 registered in the umbrella's `docs/CONVENTIONS.md`
+  §7 and indexed in `docs/HARNESS-PLAN.md`'s per-repo table (fixed 2026-07-21).
 
 - Bare `/v1` prefix + AIP colon method (`:rotateResolveToken`) —
   `src/behelink/main.py`.
