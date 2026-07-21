@@ -18,12 +18,36 @@ class RegisterRequest(BaseModel):
     port: int = Field(ge=1, le=65535)
 
 
+class HeartbeatRequest(BaseModel):
+    port: int | None = Field(default=None, ge=1, le=65535)
+
+
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "0.0.0.0"
 
 
 def _iso(ts: float) -> str:
     return datetime.fromtimestamp(ts, tz=UTC).isoformat().replace("+00:00", "Z")
+
+
+def _bearer_token(request: Request) -> str:
+    scheme, _, token = request.headers.get("authorization", "").partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        raise ProblemError(
+            401,
+            "auth",
+            "Unauthorized",
+            "missing or malformed bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+
+def _not_found(link_id: str) -> ProblemError:
+    return ProblemError(
+        404, "not_found", "Not Found", f"no resolvable link '{link_id}'"
+    )
 
 
 def _validate_id(link_id: str) -> None:
@@ -80,5 +104,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 409, "conflict", "Conflict", f"link id '{body.id}' is already registered"
             )
         return {"owner_token": owner_token, "resolve_token": resolve_token}
+
+    @app.patch("/v1/links/{link_id}")
+    def heartbeat(
+        link_id: str,
+        body: HeartbeatRequest,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, object]:
+        token = _bearer_token(request)
+        link = db.get_link(conn, link_id)
+        if link is None or not tokens.verify_token(token, link.owner_token_hash):
+            raise _not_found(link_id)
+        ip = _client_ip(request)
+        port = body.port if body.port is not None else link.port
+        now = clock.now()
+        db.update_heartbeat(conn, link_id, ip=ip, port=port, last_seen=now)
+        return {"ip": ip, "port": port, "last_seen": _iso(now)}
 
     return app
