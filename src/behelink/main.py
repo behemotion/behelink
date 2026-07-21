@@ -1,6 +1,8 @@
+import asyncio
 import re
 import sqlite3
 from collections.abc import Iterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from fastapi import Depends, FastAPI, Request, Response
@@ -9,7 +11,9 @@ from pydantic import BaseModel, Field
 from behelink import clock, db, tokens
 from behelink.config import Settings
 from behelink.errors import ProblemError, install_handlers
+from behelink.pending_connect import PendingConnectStore
 from behelink.ratelimit import RateLimiter
+from behelink.reflector import ReflectorProtocol
 
 _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
 
@@ -61,12 +65,37 @@ def _validate_id(link_id: str) -> None:
         )
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    settings: Settings = app.state.settings
+    loop = asyncio.get_running_loop()
+    transport, _ = await loop.create_datagram_endpoint(
+        lambda: ReflectorProtocol(
+            settings.database_path,
+            app.state.reflector_rate_limiter,
+            settings.reflector_max_payload_bytes,
+        ),
+        local_addr=(settings.reflector_host, settings.reflector_port),
+    )
+    try:
+        yield
+    finally:
+        transport.close()
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings()
-    app = FastAPI(title="behelink", docs_url=None, redoc_url=None)
+    app = FastAPI(title="behelink", docs_url=None, redoc_url=None, lifespan=_lifespan)
     app.state.settings = settings
     install_handlers(app)
     app.state.rate_limiter = RateLimiter(settings.registration_rate_per_hour)
+    app.state.reflector_rate_limiter = RateLimiter(
+        settings.reflector_rate_per_minute, window_seconds=60.0
+    )
+    app.state.request_connect_limiter = RateLimiter(
+        settings.request_connect_rate_per_minute, window_seconds=60.0
+    )
+    app.state.pending_connect_store = PendingConnectStore(settings.pending_connect_ttl_seconds)
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(settings.database_path)
