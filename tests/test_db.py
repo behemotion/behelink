@@ -58,3 +58,20 @@ def test_delete_link(conn):
     db.insert_link(conn, make_link())
     db.delete_link(conn, "alpha")
     assert db.get_link(conn, "alpha") is None
+
+
+def test_find_link_by_token_hash_matches_owner(conn):
+    db.insert_link(conn, make_link())
+    got = db.find_link_by_token_hash(conn, "o" * 64)
+    assert got == make_link()
+
+
+def test_find_link_by_token_hash_matches_resolve(conn):
+    db.insert_link(conn, make_link())
+    got = db.find_link_by_token_hash(conn, "r" * 64)
+    assert got == make_link()
+
+
+def test_find_link_by_token_hash_no_match_returns_none(conn):
+    db.insert_link(conn, make_link())
+    assert db.find_link_by_token_hash(conn, "x" * 64) is None

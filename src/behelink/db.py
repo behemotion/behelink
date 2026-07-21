@@ -58,6 +58,14 @@ def get_link(conn: sqlite3.Connection, link_id: str) -> Link | None:
     return Link(**dict(row)) if row else None
 
 
+def find_link_by_token_hash(conn: sqlite3.Connection, token_hash: str) -> Link | None:
+    row = conn.execute(
+        "SELECT * FROM links WHERE owner_token_hash = ? OR resolve_token_hash = ?",
+        (token_hash, token_hash),
+    ).fetchone()
+    return Link(**dict(row)) if row else None
+
+
 def update_heartbeat(
     conn: sqlite3.Connection, link_id: str, ip: str, port: int, last_seen: float
 ) -> None:
