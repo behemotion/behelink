@@ -11,12 +11,15 @@ Deployed **2026-07-21** to the dedicated public server (Hostkey panel name
 | App checkout | `/home/build/apps/behelink/` (rsync'd working tree; `uv sync --extra dev`) |
 | State | `/home/build/apps/behelink-data/behelink.db` (SQLite, WAL) |
 | Service | systemd **user** unit `behelink.service` (linger enabled — survives logout, starts at boot) |
-| Front | Caddy (Ubuntu package), vhost `link.behemotion.com`, auto-TLS (Let's Encrypt, obtained 2026-07-21, auto-renews) → `reverse_proxy 127.0.0.1:47150` |
+| Front | Caddy (official caddy apt repo, v2.11.4), vhost `link.behemotion.com`, auto-TLS (Let's Encrypt, obtained 2026-07-21, auto-renews) → `reverse_proxy 127.0.0.1:47150` |
+| Firewall | ufw: default-deny inbound; `22/tcp` (rate-limited), `80/tcp`, `443/tcp+udp` only |
+| Brute-force | fail2ban, `sshd` jail (systemd backend, incremental bans up to 48h) |
+| Updates | unattended-upgrades: security + `-updates` pockets, auto-reboot 04:30 when required |
 
 ## Shape
 
 ```
-internet ──TLS──► Caddy vhost link.behemotion.com
+internet ──ufw (22 limit / 80 / 443)──► Caddy vhost link.behemotion.com
                     └─ reverse_proxy 127.0.0.1:47150 ──► uvicorn/behelink
                                                            └─ SQLite (~/apps/behelink-data/)
 ```
@@ -36,7 +39,7 @@ internet ──TLS──► Caddy vhost link.behemotion.com
 
 ## Server-side layout
 
-`~/.config/systemd/user/behelink.service`:
+`~/.config/systemd/user/behelink.service` (hardened 2026-07-21):
 
 ```ini
 [Unit]
@@ -47,20 +50,69 @@ After=network.target
 WorkingDirectory=/home/build/apps/behelink
 Environment=BEHELINK_DATABASE_PATH=/home/build/apps/behelink-data/behelink.db
 ExecStart=/home/build/apps/behelink/.venv/bin/behelink
-Restart=on-failure
+Restart=always
 RestartSec=2
+NoNewPrivileges=yes
+PrivateTmp=yes
+MemoryHigh=768M
+MemoryMax=1G
 
 [Install]
 WantedBy=default.target
 ```
 
-`/etc/caddy/Caddyfile`:
+`/etc/caddy/Caddyfile` (Caddy from the official
+`dl.cloudsmith.io/public/caddy/stable` apt repo; the packaged unit runs with
+`ProtectSystem=full`, so a drop-in `/etc/systemd/system/caddy.service.d/logdir.conf`
+adds `LogsDirectory=caddy` + `ReadWritePaths=/var/log/caddy` for the access
+log):
 
 ```caddyfile
 link.behemotion.com {
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		-Server
+		-Via
+		defer
+	}
+
+	request_body {
+		max_size 16KB
+	}
+
+	log {
+		output file /var/log/caddy/link.behemotion.com-access.log {
+			roll_size 50MiB
+			roll_keep 10
+			roll_keep_for 720h
+		}
+	}
+
 	reverse_proxy 127.0.0.1:47150
 }
 ```
+
+Host hardening (all applied 2026-07-21):
+
+- **sshd** — `/etc/ssh/sshd_config.d/00-hardening.conf`: `PermitRootLogin no`,
+  `PasswordAuthentication no`, `AllowUsers build`, `MaxAuthTries 3`,
+  `LoginGraceTime 30`, `X11Forwarding no`, keepalive 300s×2. (`00-` sorts
+  before cloud-init's `50-` file; sshd first-match wins.) Recovery if locked
+  out: Hostkey panel VNC console — root's local password is intentionally
+  still set for that path.
+- **ufw** — default deny incoming / allow outgoing; `limit 22/tcp`,
+  `allow 80/tcp`, `allow 443/tcp`, `allow 443/udp` (HTTP/3).
+- **fail2ban** — `/etc/fail2ban/jail.local`: systemd backend, sshd jail in
+  aggressive mode, 1h bans escalating to 48h (`bantime.increment`).
+- **unattended-upgrades** — `/etc/apt/apt.conf.d/52unattended-upgrades-local`
+  adds the `-updates` pocket, unused-dependency cleanup, and
+  `Automatic-Reboot 04:30`.
+- **Backups** — user timer `behelink-backup.timer` (daily, persistent,
+  randomized ≤1h) runs `~/apps/behelink-data/backup.sh`: `sqlite3 .backup` to
+  `~/apps/behelink-data/backups/`, pruned after 14 days.
+- **Docker/containerd** are installed and running but unused (no containers);
+  disabling them was deferred — see "Open items".
 
 ## Redeploy
 
@@ -80,13 +132,32 @@ The database lives outside the checkout, so `--delete` is safe.
 ## Ops
 
 - Health: `curl https://link.behemotion.com/healthz` → `{"status":"ok"}`.
-- Logs: `journalctl --user -u behelink` (app), `sudo journalctl -u caddy`.
+- Logs: `journalctl --user -u behelink` (app), `sudo journalctl -u caddy`
+  (server), `sudo tail /var/log/caddy/link.behemotion.com-access.log` (JSON
+  access log, 50 MiB × 10 rolls, 30-day retention).
+- Bans: `sudo fail2ban-client status sshd`; firewall: `sudo ufw status verbose`.
+- Backups: `systemctl --user list-timers behelink-backup.timer`; restore =
+  copy a `~/apps/behelink-data/backups/behelink-*.db` snapshot over
+  `behelink.db` and restart the unit.
 - Admin is SQLite-file-direct in v1:
   `sqlite3 ~/apps/behelink-data/behelink.db 'SELECT id, ip, port, last_seen FROM links'`.
 - `BEHELINK_REGISTRATION_RATE_PER_HOUR` (default 10/IP) is active; tune in
   the unit's `Environment=` lines before wide announcement.
 - Single instance by design (in-memory rate limiter, SQLite); HA out of
   scope for v1.
+
+## Hole-punch signaling (not yet applied to the live box)
+
+Adds a UDP listener on `BEHELINK_REFLECTOR_PORT` (default `47151`) in the same process — no new
+systemd unit, no Caddy change (Caddy can't front raw UDP). Before deploying this:
+
+- `sudo ufw allow 47151/udp` on the live box (mirrors the existing `allow 443/udp` rule) — a
+  manual step for the operator, run once when ready to ship this feature, not part of an automated
+  redeploy.
+- Confirm `BEHELINK_REFLECTOR_HOST=0.0.0.0` (the default) — unlike the HTTP listener, this one
+  binds a public interface directly, by design (Caddy can't proxy it).
+- After the `ufw` rule is live, verify with `nc -u 46.17.103.230 47151` sending
+  `{"token":"<a live token>"}` from an outside network and confirming a JSON reply.
 
 ## Live verification (2026-07-21)
 
@@ -100,3 +171,27 @@ The database lives outside the checkout, so `--delete` is safe.
   `X-Forwarded-For` spoof ignored.
 - HTTP→HTTPS 308 redirect and Let's Encrypt cert chain verified from
   outside.
+
+## Security hardening verification (2026-07-21, second pass)
+
+- ufw active; nmap-visible surface is 22/80/443 only; ssh `limit` rule live.
+- sshd: root login + password auth refused (effective config confirmed via
+  `sshd -T`); only key-auth as `build` accepted.
+- fail2ban picked up 142 historical failed SSH attempts on activation and
+  immediately banned 3 actively brute-forcing IPs.
+- Full API e2e re-run through the hardened stack from an outside network:
+  register 201 → heartbeat (correct egress IP) → resolve → delete 204.
+- 32 KiB request body → 413 (Caddy `request_body max_size 16KB`).
+- Response headers: HSTS + nosniff present; `Server`/`Via` stripped.
+- Daily DB backup ran once manually; snapshot verified in
+  `~/apps/behelink-data/backups/`.
+
+## Open items
+
+- **Docker/containerd**: installed (with git as a dependency) but unused —
+  zero containers/images. Candidate for `systemctl disable --now docker
+  docker.socket containerd` + package purge if nothing plans to use it;
+  deferred to the operator since it was installed deliberately post-provision.
+- No external uptime monitoring yet (the box can't observe its own outages);
+  a probe on `https://link.behemotion.com/healthz` from any monitor would
+  close that gap.

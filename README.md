@@ -35,10 +35,21 @@ All endpoints under bare `/v1`; errors are RFC 9457 `application/problem+json`.
 | `GET /v1/links/{id}` | Bearer `resolve_token` | `200 {ip, port, last_seen}`; `404` if unknown **or** stale (no distinction, by design) |
 | `DELETE /v1/links/{id}` | Bearer `owner_token` | deregister → `204` |
 | `POST /v1/links/{id}:rotateResolveToken` | Bearer `owner_token` | `200 {resolve_token}` — old resolve token invalidated |
+| `POST /v1/links/{id}:requestConnect` `{port}` | Bearer `resolve_token` | queues a pending-connect (short TTL); `200 {ip, port}` — the link's own current candidate, same round trip |
+| `GET /v1/links/{id}/pending-connect?wait=N` | Bearer `owner_token` | long-poll; `200 {ip, port}` once a connect request lands, else `204` after `min(N, BEHELINK_PENDING_CONNECT_WAIT_MAX_SECONDS)` |
 | `GET /healthz` | none | `200 {"status": "ok"}` (DB ping only) |
 
 A link is **stale** when it hasn't heartbeated within
 `BEHELINK_HEARTBEAT_TTL_SECONDS` (default 180s = 3 × the ~60s heartbeat).
+
+For hole-punch usage (behetask Mode D), `port` in `PATCH`/`POST /v1/links` means the caller's
+self-STUN'd candidate port, not a forwarded listening port — self-STUN against the UDP reflector
+below. `ip` is still always server-observed, never client-declared, on every endpoint including
+the two above.
+
+behelink also runs a UDP self-STUN reflector on `BEHELINK_REFLECTOR_PORT`: send `{"token": "<owner_token
+or resolve_token>"}` as JSON; a valid token gets `{"ip", "port"}` echoing the observed source
+address back. An invalid/missing token gets no reply.
 
 Link IDs: 3–63 chars, lowercase letters/digits with inner hyphens
 (`acme-tasks`).
@@ -54,6 +65,13 @@ Env vars, `BEHELINK_` prefix:
 | `BEHELINK_REGISTRATION_RATE_PER_HOUR` | `10` | per-IP `POST /v1/links` limit |
 | `BEHELINK_HOST` | `127.0.0.1` | listener bind (Caddy fronts it) |
 | `BEHELINK_PORT` | `47150` | listener port (umbrella port registry) |
+| `BEHELINK_REFLECTOR_HOST` | `0.0.0.0` | UDP reflector bind (no Caddy in front — see `deploy.md`) |
+| `BEHELINK_REFLECTOR_PORT` | `47151` | UDP reflector port (umbrella port registry) |
+| `BEHELINK_REFLECTOR_RATE_PER_MINUTE` | `20` | per-source-IP reflector probe limit |
+| `BEHELINK_REFLECTOR_MAX_PAYLOAD_BYTES` | `512` | oversized probes are dropped, no reply |
+| `BEHELINK_REQUEST_CONNECT_RATE_PER_MINUTE` | `10` | per-resolve_token `:requestConnect` limit |
+| `BEHELINK_PENDING_CONNECT_TTL_SECONDS` | `10.0` | how long a queued connect request stays valid |
+| `BEHELINK_PENDING_CONNECT_WAIT_MAX_SECONDS` | `25.0` | server-side clamp on the long-poll `wait` query param |
 
 ## Development
 
@@ -62,6 +80,10 @@ uv sync --extra dev
 uv run pytest
 uv run behelink      # serves 127.0.0.1:47150
 ```
+
+Testing a client (behetask-server, a script, etc.) against a real public
+instance instead of a local one? See
+[`docs/connecting-a-dev-build.md`](docs/connecting-a-dev-build.md).
 
 ## Security notes
 
