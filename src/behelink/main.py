@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from behelink import clock, db, tokens
 from behelink.config import Settings
 from behelink.errors import ProblemError, install_handlers
+from behelink.ratelimit import RateLimiter
 
 _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
 
@@ -65,6 +66,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="behelink", docs_url=None, redoc_url=None)
     app.state.settings = settings
     install_handlers(app)
+    app.state.rate_limiter = RateLimiter(settings.registration_rate_per_hour)
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(settings.database_path)
@@ -85,6 +87,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         conn: sqlite3.Connection = Depends(get_conn),
     ) -> dict[str, str]:
         _validate_id(body.id)
+        if not app.state.rate_limiter.allow(_client_ip(request)):
+            raise ProblemError(
+                429,
+                "rate_limited",
+                "Too Many Requests",
+                "registration rate limit exceeded for this address",
+                headers={"Retry-After": "3600"},
+            )
         owner_token = tokens.generate_token("blo")
         resolve_token = tokens.generate_token("blr")
         now = clock.now()
