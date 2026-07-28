@@ -1,4 +1,5 @@
-"""SQLite storage: single `links` table, connection-per-request."""
+"""SQLite storage: `links` plus the durable Telegram update queue,
+connection-per-request."""
 
 import sqlite3
 from dataclasses import dataclass
@@ -16,6 +17,40 @@ CREATE TABLE IF NOT EXISTS links (
 """
 
 
+_TELEGRAM_SCHEMA = """
+CREATE TABLE IF NOT EXISTS telegram_updates (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    link_id TEXT NOT NULL,
+    payload BLOB NOT NULL,
+    secret_header TEXT,
+    received_at REAL NOT NULL
+)
+"""
+
+_TELEGRAM_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS telegram_updates_link_seq"
+    " ON telegram_updates (link_id, seq)",
+    "CREATE INDEX IF NOT EXISTS telegram_updates_received_at"
+    " ON telegram_updates (received_at)",
+)
+
+# Added to `links` after the original schema shipped. CREATE TABLE IF NOT EXISTS
+# will not add these to a database that already exists, so they are applied by
+# explicit ALTER TABLE on every connect.
+_LINK_ADDED_COLUMNS = {
+    "telegram_path_token_hash": "TEXT",
+    "telegram_relay_enabled_at": "REAL",
+    "telegram_dropped_total": "INTEGER NOT NULL DEFAULT 0",
+}
+
+
+def _migrate_links(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(links)")}
+    for name, decl in _LINK_ADDED_COLUMNS.items():
+        if name not in existing:
+            conn.execute(f"ALTER TABLE links ADD COLUMN {name} {decl}")
+
+
 def connect(path: str) -> sqlite3.Connection:
     # check_same_thread=False: async routes run on the event loop thread while the
     # sync `get_conn` dependency that creates this connection runs in FastAPI's
@@ -25,6 +60,10 @@ def connect(path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute(_SCHEMA)
+    conn.execute(_TELEGRAM_SCHEMA)
+    for statement in _TELEGRAM_INDEXES:
+        conn.execute(statement)
+    _migrate_links(conn)
     conn.commit()
     return conn
 
@@ -38,6 +77,12 @@ class Link:
     resolve_token_hash: str
     created_at: float
     last_seen: float
+    # Defaulted so every existing Link(...) construction keeps working. `get_link`
+    # does Link(**dict(row)) over SELECT *, so these must exist as fields the
+    # moment the ALTER TABLE above adds the columns.
+    telegram_path_token_hash: str | None = None
+    telegram_relay_enabled_at: float | None = None
+    telegram_dropped_total: int = 0
 
 
 def insert_link(conn: sqlite3.Connection, link: Link) -> None:
