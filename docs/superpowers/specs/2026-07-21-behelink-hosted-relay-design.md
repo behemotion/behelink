@@ -43,6 +43,9 @@ as single-tenant deployments.
 - No data-plane relaying/proxying of task-server traffic. If a client's network can't support
   direct reachability once resolved (e.g. no port-forwarding possible, real NAT hole-punching
   needed), that's Mode B/C territory (`docs/network-reachability.md`), not behelink.
+  **Amended 2026-07-28:** one narrow exception now exists — inbound Telegram update payloads for
+  links that opt in — specified in `2026-07-28-behelink-telegram-webhook-relay-design.md`. General
+  task-server proxying remains out of scope; the CLI data path is still direct or hole-punched.
 - No NAT hole-punching / STUN-style negotiation. Explicitly out of scope — see NAT Assumption.
 - No change to behetask-server's application-level auth (API keys, org-admin token, claim flow).
   Reachability and authentication remain orthogonal, same principle as the existing
