@@ -138,3 +138,113 @@ def update_resolve_token_hash(
 def delete_link(conn: sqlite3.Connection, link_id: str) -> None:
     conn.execute("DELETE FROM links WHERE id = ?", (link_id,))
     conn.commit()
+
+
+@dataclass
+class TelegramUpdate:
+    seq: int
+    link_id: str
+    payload: bytes
+    secret_header: str | None
+    received_at: float
+
+
+def enqueue_update(
+    conn: sqlite3.Connection,
+    link_id: str,
+    payload: bytes,
+    secret_header: str | None,
+    received_at: float,
+    max_depth: int,
+) -> int | None:
+    """Commit one update. Returns its seq, or None when the queue is full.
+
+    The depth check is advisory: two concurrent ingress requests can both pass
+    it and overshoot max_depth by the number of in-flight requests. That is
+    bounded by the ingress rate limiter and costs a few extra rows, whereas
+    holding a write lock across the check would serialize every delivery.
+    """
+    (depth,) = conn.execute(
+        "SELECT COUNT(*) FROM telegram_updates WHERE link_id = ?", (link_id,)
+    ).fetchone()
+    if depth >= max_depth:
+        return None
+    cursor = conn.execute(
+        "INSERT INTO telegram_updates (link_id, payload, secret_header, received_at)"
+        " VALUES (?, ?, ?, ?)",
+        (link_id, payload, secret_header, received_at),
+    )
+    conn.commit()
+    return int(cursor.lastrowid)
+
+
+def fetch_updates(
+    conn: sqlite3.Connection, link_id: str, limit: int
+) -> list[TelegramUpdate]:
+    rows = conn.execute(
+        "SELECT seq, link_id, payload, secret_header, received_at FROM telegram_updates"
+        " WHERE link_id = ? ORDER BY seq LIMIT ?",
+        (link_id, limit),
+    ).fetchall()
+    return [TelegramUpdate(**dict(row)) for row in rows]
+
+
+def ack_updates(conn: sqlite3.Connection, link_id: str, through_seq: int) -> int:
+    cursor = conn.execute(
+        "DELETE FROM telegram_updates WHERE link_id = ? AND seq <= ?",
+        (link_id, through_seq),
+    )
+    conn.commit()
+    return cursor.rowcount
+
+
+def queue_stats(
+    conn: sqlite3.Connection, link_id: str
+) -> tuple[int, int | None, float | None]:
+    row = conn.execute(
+        "SELECT COUNT(*) AS depth, MIN(seq) AS oldest, MAX(received_at) AS last"
+        " FROM telegram_updates WHERE link_id = ?",
+        (link_id,),
+    ).fetchone()
+    return int(row["depth"]), row["oldest"], row["last"]
+
+
+def sweep_expired(conn: sqlite3.Connection, cutoff: float) -> int:
+    """Delete rows older than cutoff, crediting each link's dropped counter."""
+    rows = conn.execute(
+        "SELECT link_id, COUNT(*) AS n FROM telegram_updates"
+        " WHERE received_at < ? GROUP BY link_id",
+        (cutoff,),
+    ).fetchall()
+    total = 0
+    for row in rows:
+        conn.execute(
+            "UPDATE links SET telegram_dropped_total = telegram_dropped_total + ?"
+            " WHERE id = ?",
+            (row["n"], row["link_id"]),
+        )
+        total += int(row["n"])
+    conn.execute("DELETE FROM telegram_updates WHERE received_at < ?", (cutoff,))
+    conn.commit()
+    return total
+
+
+def enable_telegram_relay(
+    conn: sqlite3.Connection, link_id: str, path_token_hash: str, enabled_at: float
+) -> None:
+    conn.execute(
+        "UPDATE links SET telegram_path_token_hash = ?, telegram_relay_enabled_at = ?"
+        " WHERE id = ?",
+        (path_token_hash, enabled_at, link_id),
+    )
+    conn.commit()
+
+
+def disable_telegram_relay(conn: sqlite3.Connection, link_id: str) -> None:
+    conn.execute(
+        "UPDATE links SET telegram_path_token_hash = NULL,"
+        " telegram_relay_enabled_at = NULL WHERE id = ?",
+        (link_id,),
+    )
+    conn.execute("DELETE FROM telegram_updates WHERE link_id = ?", (link_id,))
+    conn.commit()
