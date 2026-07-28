@@ -1,4 +1,5 @@
 import asyncio
+import json
 import re
 import sqlite3
 from collections.abc import Iterator
@@ -31,6 +32,10 @@ class HeartbeatRequest(BaseModel):
 
 class RequestConnectRequest(BaseModel):
     port: int = Field(ge=1, le=65535)
+
+
+class TelegramAckRequest(BaseModel):
+    through_seq: int = Field(ge=1)
 
 
 def _client_ip(request: Request) -> str:
@@ -375,5 +380,73 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         # always finds the row it was woken for.
         app.state.telegram_queue_waiter.notify(link_id)
         return JSONResponse({"ok": True})
+
+    @app.get("/v1/links/{link_id}/telegram/updates")
+    async def telegram_updates(
+        link_id: str,
+        request: Request,
+        wait: float = Query(default=0.0, ge=0.0),
+        limit: int = Query(default=100, ge=1),
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> Response:
+        _owner_link(link_id, request, conn)
+        capped = min(limit, settings.telegram_updates_max_batch)
+        rows = db.fetch_updates(conn, link_id, limit=capped)
+        if not rows:
+            await app.state.telegram_queue_waiter.wait(
+                link_id,
+                timeout=min(wait, settings.telegram_updates_wait_max_seconds),
+                # Re-read the durable queue after the waiter clears its event, so
+                # an enqueue racing that clear can't strand a committed update
+                # until the full timeout expires.
+                peek=lambda: bool(db.fetch_updates(conn, link_id, limit=1)),
+            )
+            rows = db.fetch_updates(conn, link_id, limit=capped)
+        if not rows:
+            return Response(status_code=204)
+        # Rows are deliberately not deleted here — `ack` does that. Redelivery
+        # before ack is expected and correct.
+        return JSONResponse(
+            {
+                "updates": [
+                    {
+                        "seq": row.seq,
+                        "received_at": _iso(row.received_at),
+                        "secret_header": row.secret_header,
+                        "payload": json.loads(row.payload),
+                    }
+                    for row in rows
+                ]
+            }
+        )
+
+    @app.post("/v1/links/{link_id}/telegram/ack", status_code=204)
+    def telegram_ack(
+        link_id: str,
+        body: TelegramAckRequest,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> Response:
+        _owner_link(link_id, request, conn)
+        db.ack_updates(conn, link_id, through_seq=body.through_seq)
+        return Response(status_code=204)
+
+    @app.get("/v1/links/{link_id}/telegram")
+    def telegram_status(
+        link_id: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, object]:
+        link = _owner_link(link_id, request, conn)
+        depth, oldest_seq, last_enqueue_at = db.queue_stats(conn, link_id)
+        return {
+            "enabled": link.telegram_path_token_hash is not None,
+            "depth": depth,
+            "oldest_seq": oldest_seq,
+            "last_enqueue_at": (
+                _iso(last_enqueue_at) if last_enqueue_at is not None else None
+            ),
+            "dropped_total": link.telegram_dropped_total,
+        }
 
     return app

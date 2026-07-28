@@ -1,5 +1,3 @@
-import pytest
-
 from behelink import db, tokens
 
 
@@ -78,7 +76,6 @@ async def test_enable_is_404_when_the_master_switch_is_off(app, client):
     assert resp.status_code == 404
 
 
-@pytest.mark.xfail(reason="status endpoint lands in Task 7", strict=True)
 async def test_disable_purges_queued_updates(client):
     creds = await register(client)
     headers = bearer(creds["owner_token"])
