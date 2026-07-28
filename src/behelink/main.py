@@ -101,6 +101,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         settings.request_connect_rate_per_minute, window_seconds=60.0
     )
     app.state.pending_connect_store = PendingConnectStore(settings.pending_connect_ttl_seconds)
+    # Cleartext path tokens for idempotent re-enable only. Hashes in the DB stay
+    # authoritative for validation; losing this cache on restart costs a rotate,
+    # never a security property.
+    app.state.telegram_path_tokens = {}
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(settings.database_path)
@@ -245,5 +249,66 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if record is None:
             return Response(status_code=204)
         return JSONResponse({"ip": record.ip, "port": record.port})
+
+    def _owner_link(link_id: str, request: Request, conn: sqlite3.Connection) -> db.Link:
+        token = _bearer_token(request)
+        link = db.get_link(conn, link_id)
+        if link is None or not tokens.verify_token(token, link.owner_token_hash):
+            raise _not_found(link_id)
+        return link
+
+    def _webhook_url(link_id: str, path_token: str) -> str:
+        return f"{settings.public_base_url.rstrip('/')}/v1/tg/{link_id}/{path_token}"
+
+    def _mint_path_token(link_id: str, conn: sqlite3.Connection) -> str:
+        path_token = tokens.generate_token("blw")
+        db.enable_telegram_relay(
+            conn, link_id, tokens.hash_token(path_token), clock.now()
+        )
+        app.state.telegram_path_tokens[link_id] = path_token
+        return path_token
+
+    @app.post("/v1/links/{link_id}:enableTelegramRelay")
+    def enable_telegram_relay(
+        link_id: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, str]:
+        # With the relay switched off the ingress refuses everything, so minting
+        # here would hand back a webhook_url that is dead on arrival.
+        if not settings.telegram_relay_enabled:
+            raise _not_found(link_id)
+        link = _owner_link(link_id, request, conn)
+        # Idempotent: the token is hashed at rest and cannot be recovered, so a
+        # second enable must not mint a new one or it would silently break the
+        # webhook URL already registered with Telegram.
+        cached = app.state.telegram_path_tokens.get(link_id)
+        if link.telegram_path_token_hash is not None and cached is not None:
+            return {"webhook_url": _webhook_url(link_id, cached), "path_token": cached}
+        path_token = _mint_path_token(link_id, conn)
+        return {"webhook_url": _webhook_url(link_id, path_token), "path_token": path_token}
+
+    @app.post("/v1/links/{link_id}:rotateWebhookPathToken")
+    def rotate_webhook_path_token(
+        link_id: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> dict[str, str]:
+        if not settings.telegram_relay_enabled:
+            raise _not_found(link_id)
+        _owner_link(link_id, request, conn)
+        path_token = _mint_path_token(link_id, conn)
+        return {"webhook_url": _webhook_url(link_id, path_token), "path_token": path_token}
+
+    @app.post("/v1/links/{link_id}:disableTelegramRelay", status_code=204)
+    def disable_telegram_relay(
+        link_id: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> Response:
+        _owner_link(link_id, request, conn)
+        db.disable_telegram_relay(conn, link_id)
+        app.state.telegram_path_tokens.pop(link_id, None)
+        return Response(status_code=204)
 
     return app
