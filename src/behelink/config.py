@@ -16,3 +16,11 @@ class Settings(BaseSettings):
     request_connect_rate_per_minute: int = 10
     pending_connect_ttl_seconds: float = 10.0
     pending_connect_wait_max_seconds: float = 25.0
+    public_base_url: str = "https://link.behemotion.com"
+    telegram_relay_enabled: bool = True
+    telegram_queue_max_depth: int = 1000
+    telegram_queue_ttl_seconds: int = 3600
+    telegram_updates_wait_max_seconds: float = 25.0
+    telegram_updates_max_batch: int = 100
+    telegram_webhook_rate_per_minute: int = 120
+    telegram_max_payload_bytes: int = 1048576
