@@ -110,3 +110,42 @@ def test_queue_stats_reports_depth_oldest_and_last_enqueue(conn):
     first = db.enqueue_update(conn, "acme", b"a", None, 10.0, max_depth=10)
     db.enqueue_update(conn, "acme", b"b", None, 20.0, max_depth=10)
     assert db.queue_stats(conn, "acme") == (2, first, 20.0)
+
+
+async def test_ingress_sweeps_expired_rows(client, monkeypatch):
+    from behelink import clock
+
+    body = (await client.post("/v1/links", json={"id": "acme", "port": 1})).json()
+    headers = {"Authorization": f"Bearer {body['owner_token']}"}
+    token = (
+        await client.post("/v1/links/acme:enableTelegramRelay", headers=headers)
+    ).json()["path_token"]
+
+    monkeypatch.setattr(clock, "now", lambda: 1000.0)
+    await client.post(f"/v1/tg/acme/{token}", json={"update_id": 1})
+
+    # Far past the 3600s TTL.
+    monkeypatch.setattr(clock, "now", lambda: 100000.0)
+    await client.post(f"/v1/tg/acme/{token}", json={"update_id": 2})
+
+    status = (await client.get("/v1/links/acme/telegram", headers=headers)).json()
+    assert status["depth"] == 1
+    # Expiry is silent to Telegram, so it has to stay visible to the operator.
+    assert status["dropped_total"] == 1
+
+
+async def test_a_full_queue_503_is_not_counted_as_dropped(app, client):
+    # Telegram retries a 503, so nothing was lost — only TTL expiry is a real drop.
+    body = (await client.post("/v1/links", json={"id": "acme", "port": 1})).json()
+    headers = {"Authorization": f"Bearer {body['owner_token']}"}
+    token = (
+        await client.post("/v1/links/acme:enableTelegramRelay", headers=headers)
+    ).json()["path_token"]
+    app.state.settings.telegram_queue_max_depth = 1
+
+    await client.post(f"/v1/tg/acme/{token}", json={"update_id": 1})
+    rejected = await client.post(f"/v1/tg/acme/{token}", json={"update_id": 2})
+
+    assert rejected.status_code == 503
+    status = (await client.get("/v1/links/acme/telegram", headers=headers)).json()
+    assert status["dropped_total"] == 0

@@ -358,6 +358,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise ProblemError(
                 413, "usage", "Payload Too Large", "update exceeds configured maximum"
             )
+        # Swept here rather than on a timer: behelink stays single-process and
+        # testable, and the queue only grows when ingress happens — so that is
+        # exactly when it needs trimming.
+        db.sweep_expired(conn, cutoff=clock.now() - settings.telegram_queue_ttl_seconds)
         seq = db.enqueue_update(
             conn,
             link_id,
