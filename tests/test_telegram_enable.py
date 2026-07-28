@@ -34,7 +34,6 @@ async def test_enable_is_idempotent_and_keeps_the_same_token(client):
     assert first["path_token"] == second["path_token"]
 
 
-@pytest.mark.xfail(reason="ingress lands in Task 6", strict=True)
 async def test_rotate_invalidates_the_old_token(client):
     creds = await register(client)
     headers = bearer(creds["owner_token"])

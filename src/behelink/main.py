@@ -15,6 +15,7 @@ from behelink.errors import ProblemError, install_handlers
 from behelink.pending_connect import PendingConnectStore
 from behelink.ratelimit import RateLimiter
 from behelink.reflector import ReflectorProtocol
+from behelink.telegram_queue import TelegramQueueWaiter
 
 _ID_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])?$")
 
@@ -105,6 +106,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # authoritative for validation; losing this cache on restart costs a rotate,
     # never a security property.
     app.state.telegram_path_tokens = {}
+    app.state.telegram_webhook_limiter = RateLimiter(
+        settings.telegram_webhook_rate_per_minute, window_seconds=60.0
+    )
+    app.state.telegram_queue_waiter = TelegramQueueWaiter()
 
     def get_conn() -> Iterator[sqlite3.Connection]:
         conn = db.connect(settings.database_path)
@@ -310,5 +315,65 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db.disable_telegram_relay(conn, link_id)
         app.state.telegram_path_tokens.pop(link_id, None)
         return Response(status_code=204)
+
+    @app.post("/v1/tg/{link_id}/{path_token}")
+    async def telegram_ingress(
+        link_id: str,
+        path_token: str,
+        request: Request,
+        conn: sqlite3.Connection = Depends(get_conn),
+    ) -> JSONResponse:
+        if not settings.telegram_relay_enabled:
+            raise _not_found(link_id)
+        link = db.get_link(conn, link_id)
+        # Unknown link, relay disabled, and bad token are one indistinguishable
+        # 404 — this endpoint is unauthenticated and public, so distinguishing
+        # them would let anyone enumerate link IDs.
+        if (
+            link is None
+            or link.telegram_path_token_hash is None
+            or not tokens.verify_token(path_token, link.telegram_path_token_hash)
+        ):
+            raise _not_found(link_id)
+        limiter = app.state.telegram_webhook_limiter
+        # Per link *and* per source IP: per-link alone lets one sender flood
+        # across many links, per-IP alone lets many senders flood one link.
+        if not limiter.allow(f"link:{link_id}") or not limiter.allow(
+            f"ip:{_client_ip(request)}"
+        ):
+            raise ProblemError(
+                429,
+                "rate_limited",
+                "Too Many Requests",
+                "webhook rate limit exceeded",
+                headers={"Retry-After": "60"},
+            )
+        payload = await request.body()
+        if len(payload) > settings.telegram_max_payload_bytes:
+            raise ProblemError(
+                413, "usage", "Payload Too Large", "update exceeds configured maximum"
+            )
+        seq = db.enqueue_update(
+            conn,
+            link_id,
+            payload=payload,
+            secret_header=request.headers.get("X-Telegram-Bot-Api-Secret-Token"),
+            received_at=clock.now(),
+            max_depth=settings.telegram_queue_max_depth,
+        )
+        if seq is None:
+            # 503 (not 200) so Telegram retries. Answering 200 here would make
+            # this a silent, permanent loss of a user's command.
+            raise ProblemError(
+                503,
+                "unavailable",
+                "Service Unavailable",
+                "update queue is full; retry later",
+                headers={"Retry-After": "10"},
+            )
+        # Notify only after enqueue_update has committed, so a woken consumer
+        # always finds the row it was woken for.
+        app.state.telegram_queue_waiter.notify(link_id)
+        return JSONResponse({"ok": True})
 
     return app

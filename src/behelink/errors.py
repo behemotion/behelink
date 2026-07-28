@@ -12,8 +12,10 @@ _TYPE_BY_STATUS = {
     404: "not_found",
     405: "usage",
     409: "conflict",
+    413: "usage",
     422: "validation_error",
     429: "rate_limited",
+    503: "unavailable",
 }
 
 
