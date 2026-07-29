@@ -6,3 +6,4 @@ __pycache__/
 *.db-shm
 .pytest_cache/
 dist/
+.claude/settings.local.json
