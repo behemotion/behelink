@@ -197,6 +197,53 @@ systemd unit, no Caddy change (Caddy can't front raw UDP).
 - Daily DB backup ran once manually; snapshot verified in
   `~/apps/behelink-data/backups/`.
 
+## Telegram webhook relay (live since 2026-07-28)
+
+Adds the opt-in Telegram relay (`POST /v1/tg/{id}/{path_token}` ingress plus the
+owner-token consumer endpoints). No new port, no new unit — it rides the existing
+HTTP listener behind Caddy. Two things are not just a code deploy:
+
+- **Live schema migration.** `db.connect()` now runs `ALTER TABLE links ADD COLUMN`
+  for `telegram_path_token_hash`, `telegram_relay_enabled_at`, and
+  `telegram_dropped_total`, and creates `telegram_updates`. It is idempotent and
+  runs on every connect, so the restart applies it — but take a backup first
+  (`bash ~/apps/behelink-data/backup.sh`) since it rewrites the live `links` table.
+- **Caddy body cap.** The global `request_body max_size 16KB` is too small for this
+  route: a legitimate 4096-character Telegram message made of 4-byte glyphs (emoji,
+  CJK) is ~49 KB. Telegram retries non-2xx, so a Caddy `413` would wedge the webhook
+  with a climbing `pending_update_count` while the bot looked healthy. The Caddyfile
+  now caps `/v1/tg/*` at 2MB and applies the 16KB cap to everything else via a
+  `not path /v1/tg/*` matcher, leaving behelink's own
+  `BEHELINK_TELEGRAM_MAX_PAYLOAD_BYTES` (1048576) as the binding limit with a proper
+  RFC 9457 body.
+
+  **The exclusion matcher is load-bearing.** Every matching `request_body` handler
+  runs in order and the last one wins, so a bare catch-all silently overrides the
+  larger route-specific cap. Verify with
+  `sudo caddy adapt --config /etc/caddy/Caddyfile --adapter caddyfile` and confirm
+  the two handlers' matchers are mutually exclusive — a `curl` probe is the only
+  way to catch this, since the pytest suite talks to the ASGI app directly and
+  never traverses Caddy.
+
+## Telegram webhook relay live verification (2026-07-28)
+
+- Backup taken before migrating (`behelink-20260728-185115.db`); standard rsync +
+  `uv sync` + `uv run pytest` + `systemctl --user restart` flow; full suite
+  (110 tests) green on the server itself.
+- Migration confirmed in place: `.schema links` shows the three new columns,
+  `telegram_updates` and both indexes exist, and all 3 pre-existing links survived.
+- E2E against `https://link.behemotion.com`: register (201) → `:enableTelegramRelay`
+  (200, `webhook_url` on the public host) → `POST /v1/tg/{id}/{token}` as Telegram
+  with `X-Telegram-Bot-Api-Secret-Token` (200 `{"ok":true}`) → `GET .../telegram`
+  (`depth 1`) → `GET .../telegram/updates` (payload and secret header round-tripped
+  verbatim) → `ack` (204) → `:disableTelegramRelay` (204) → deregister (204).
+- Body-size boundaries re-probed after the Caddy change: 49 KB emoji update → 200;
+  1.1 MB → behelink's own `413 {"type":"usage"}`; 32 KB to `/v1/links` → still 413
+  from Caddy, confirming the 16 KB cap survives everywhere else.
+- Restart durability confirmed locally before deploy: an update committed, the
+  process killed, and the row still served after restart.
+- Caddyfile backed up to `/etc/caddy/Caddyfile.bak-20260728-pre-tg-relay`.
+
 ## Open items
 
 - **Docker/containerd**: installed (with git as a dependency) but unused —
