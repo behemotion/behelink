@@ -6,7 +6,7 @@ Audited against the umbrella's [`docs/CONVENTIONS.md`](../docs/CONVENTIONS.md)
 ## Divergences
 
 1. **Network posture (§4): deliberately public-facing.** Conventions assume a
-   LAN-bound harness where only Caddy vhosts and the behemcp gateway face the
+   LAN-bound harness where only Caddy vhosts and the beherouter gateway face the
    network. behelink's entire purpose — NAT rendezvous for clients' servers —
    requires its Caddy vhost to be reachable from the public internet. This is
    the design spec's explicit, documented concession

@@ -1024,7 +1024,7 @@ In `../docs/CONVENTIONS.md`, find the "Port registry" bullet under "## 7. Servic
 deploy" and change:
 
 ```
-- **Port registry** (dev-4): `behemcp 47100 · behelib 47110/db 47119 ·
+- **Port registry** (dev-4): `beherouter 47100 · behelib 47110/db 47119 ·
   behemem 47120/db 47129 · behetask 47130/db 47139 · behedaemon 47140/db
   47149 · behelink 47150`. Code defaults, compose files, and deploy docs MUST
 ```
@@ -1032,7 +1032,7 @@ deploy" and change:
 to:
 
 ```
-- **Port registry** (dev-4): `behemcp 47100 · behelib 47110/db 47119 ·
+- **Port registry** (dev-4): `beherouter 47100 · behelib 47110/db 47119 ·
   behemem 47120/db 47129 · behetask 47130/db 47139 · behedaemon 47140/db
   47149 · behelink 47150/udp-reflector 47151`. Code defaults, compose files, and deploy docs MUST
 ```

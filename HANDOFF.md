@@ -106,7 +106,7 @@ inbound handoff on their own.
 | `behelib`               | Knowledge    | Searchable local docs/RAG layer (verbs: search, shelf/box ops, fill, serve). |
 | `behetask`              | Task         | Shared store of what work exists & who owns it (verbs: list/get/create/update task + checklist). |
 | `behedaemon`            | Operational  | Runtime / process-supervision / deploy backbone (layer role under review — see AUDIT). |
-| `behemcp`               | Connectivity | MCP gateway hub fronting the other four as surfaces (verbs: surfaces/add/remove/health/search/describe). |
+| `beherouter`               | Connectivity | MCP gateway hub fronting the other four as surfaces (verbs: surfaces/add/remove/health/search/describe). |
 | `behecheck`             | Code-review  | Hybrid (deterministic + LLM) code-review layer → SARIF v2.1.0 (verbs: review/explain/rules/health/search). |
 | `beheaxi`               | AXI          | Agent-experience-interface CLI-standards tooling catalogue (Layer-1, released v0.1.0). |
 | `beheskills`            | Skills       | Runtime-portable `SKILL.md` collection; canonical source of the `/handoff` skill. |
