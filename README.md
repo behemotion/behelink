@@ -18,7 +18,7 @@ collect, so a bot works with no public ingress on the client side. See
 [`docs/superpowers/specs/2026-07-28-behelink-telegram-webhook-relay-design.md`](docs/superpowers/specs/2026-07-28-behelink-telegram-webhook-relay-design.md).
 
 BEHEMOTION operates one public instance by default —
-**https://link.behemotion.com** (see [`deploy.md`](deploy.md)); anyone can
+**https://link.behemotion.com** (see [`DEPLOY.md`](DEPLOY.md)); anyone can
 self-host their own behelink and point their deployment at it instead.
 
 ## Design
@@ -99,7 +99,7 @@ Env vars, `BEHELINK_` prefix:
 | `BEHELINK_REGISTRATION_RATE_PER_HOUR` | `10` | per-IP `POST /v1/links` limit |
 | `BEHELINK_HOST` | `127.0.0.1` | listener bind (Caddy fronts it) |
 | `BEHELINK_PORT` | `47150` | listener port (umbrella port registry) |
-| `BEHELINK_REFLECTOR_HOST` | `0.0.0.0` | UDP reflector bind (no Caddy in front — see `deploy.md`) |
+| `BEHELINK_REFLECTOR_HOST` | `0.0.0.0` | UDP reflector bind (no Caddy in front — see `DEPLOY.md`) |
 | `BEHELINK_REFLECTOR_PORT` | `47151` | UDP reflector port (umbrella port registry) |
 | `BEHELINK_REFLECTOR_RATE_PER_MINUTE` | `20` | per-source-IP reflector probe limit |
 | `BEHELINK_REFLECTOR_MAX_PAYLOAD_BYTES` | `512` | oversized probes are dropped, no reply |

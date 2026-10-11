@@ -5,7 +5,7 @@ one-off script, or anything else that needs to register/resolve a rendezvous
 link) at the **production** behelink instance instead of running your own
 throwaway copy.
 
-Production: **https://link.behemotion.com** — see [`deploy.md`](../deploy.md)
+Production: **https://link.behemotion.com** — see [`DEPLOY.md`](../DEPLOY.md)
 for how it's hosted. This doc is about being a *client* of it, not operating
 it.
 
@@ -20,7 +20,7 @@ it.
 
 Default to production whenever you're testing that *your* client correctly
 registers, heartbeats, and gets resolved from somewhere else — that's the
-scenario production is verified for (see `deploy.md`'s live-verification
+scenario production is verified for (see `DEPLOY.md`'s Verify
 section). Reach for a local instance only when working on behelink's own
 code, or in automated tests where hitting a shared public service would be
 wrong regardless of correctness.
@@ -129,5 +129,5 @@ curl https://link.behemotion.com/healthz
 ```
 
 If this fails, the problem is the relay or your network, not your
-integration — check `deploy.md`'s Ops section (`journalctl --user -u
+integration — check `DEPLOY.md`'s Ops section (`journalctl --user -u
 behelink`, `systemctl --user status behelink` on the host).
