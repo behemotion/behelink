@@ -7,3 +7,14 @@ __pycache__/
 .pytest_cache/
 dist/
 .claude/settings.local.json
+
+# BEHEMOTION operator docs — local only, never committed (CONVENTIONS §11)
+/AGENTS.md
+/CLAUDE.md
+/CONNECTIONS.md
+/HANDOFF.md
+/HARNESS-DIVERGENCES.md
+/docs/handoffs/
+/docs/history/
+/.claude/
+/.opencode/
